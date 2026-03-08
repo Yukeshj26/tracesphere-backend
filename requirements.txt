@@ -4,3 +4,5 @@ firebase-admin==6.5.0
 numpy==1.26.4
 pydantic==2.7.1
 python-multipart==0.0.9
+scikit-learn==1.4.2
+pandas==2.2.2
