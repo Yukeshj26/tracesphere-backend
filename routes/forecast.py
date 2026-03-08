@@ -1,5 +1,5 @@
 """
-ML Forecast routes — with caching so model trains only once
+ML Forecast routes — always fetches fresh data from Firebase
 """
 import warnings
 warnings.filterwarnings("ignore")
@@ -12,14 +12,14 @@ from services.ml_model import get_model, SEASONAL_MULTIPLIERS
 
 router = APIRouter()
 
-# ── Cache — avoid retraining on every request ─────────────────────────────────
+# ── Cache — short cache to avoid hammering Firebase on every request ──────────
 _cache = {
-    "results":     None,
-    "summary":     None,
-    "analytics":   None,
-    "expires_at":  None,
+    "results":    None,
+    "summary":    None,
+    "analytics":  None,
+    "expires_at": None,
 }
-CACHE_MINUTES = 5
+CACHE_SECONDS = 30  # refresh every 30 seconds
 
 
 def _now():
@@ -35,20 +35,29 @@ def _is_cache_valid():
 
 
 def _fetch_data():
+    """Always fetch latest data from Firebase."""
     db          = get_db()
     assets      = [doc.to_dict() for doc in db.collection("assets").stream()]
     procurement = [doc.to_dict() for doc in db.collection("procurement").stream()]
+    print(f"[Forecast] Fetched {len(assets)} assets, {len(procurement)} procurement records from Firebase")
     return assets, procurement
 
 
 def _run_and_cache():
-    """Fetch data, run ML, store in cache."""
+    """Fetch fresh data from Firebase, run ML, store in cache."""
     assets, procurement = _fetch_data()
-    model = get_model()
 
-    results   = model.predict(assets, procurement)
+    if not assets:
+        _cache["results"]    = []
+        _cache["summary"]    = {"critical":0,"high":0,"medium":0,"low":0,"totalBudget":0,"avgConfidence":0,"currentSeason":"Unknown","totalAssets":0}
+        _cache["analytics"]  = {}
+        _cache["expires_at"] = _now() + timedelta(seconds=CACHE_SECONDS)
+        return [], _cache["summary"], {}
+
+    model   = get_model()
+    results = model.predict(assets, procurement)
     analytics = model.report_analytics(assets, procurement)
-    summary   = {
+    summary = {
         "critical":      sum(1 for r in results if r["risk"] == "critical"),
         "high":          sum(1 for r in results if r["risk"] == "high"),
         "medium":        sum(1 for r in results if r["risk"] == "medium"),
@@ -62,7 +71,7 @@ def _run_and_cache():
     _cache["results"]    = results
     _cache["summary"]    = summary
     _cache["analytics"]  = analytics
-    _cache["expires_at"] = _now() + timedelta(minutes=CACHE_MINUTES)
+    _cache["expires_at"] = _now() + timedelta(seconds=CACHE_SECONDS)
 
     return results, summary, analytics
 
@@ -86,7 +95,7 @@ def get_forecast(
         "totalAssets": len(_cache["results"]),
         "filtered":    len(results),
         "model":       "RandomForest + GradientBoosting + Ridge Ensemble",
-        "cached":      True,
+        "cached":      _is_cache_valid(),
         "results":     results,
     }
 
@@ -120,6 +129,7 @@ def retrain_model():
     model = get_model()
     stats = model.train(assets, procurement, verbose=False)
     model.save("models")
+    # Clear cache so next request uses fresh predictions
     _cache["results"]    = None
     _cache["expires_at"] = None
     return {"message": "Model retrained, cache cleared", "stats": stats}
@@ -127,7 +137,9 @@ def retrain_model():
 
 @router.post("/refresh")
 def refresh_cache():
-    """Force re-run forecast without retraining."""
+    """Force clear cache so next request re-fetches from Firebase."""
+    _cache["results"]    = None
+    _cache["expires_at"] = None
     _run_and_cache()
     return {"message": "Cache refreshed", "totalAssets": len(_cache["results"])}
 
