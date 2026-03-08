@@ -1,0 +1,106 @@
+"""
+ML Forecast routes — calls ml_forecast.py service
+"""
+from fastapi import APIRouter, Query
+from typing import Optional
+from services.firebase import get_db
+from services.ml_forecast import run_ml_forecast, SEASONAL_MULTIPLIERS
+from datetime import datetime
+
+router = APIRouter()
+
+
+@router.get("/")
+def get_forecast(
+    risk:       Optional[str] = Query(None, description="Filter by risk: critical/high/medium/low"),
+    department: Optional[str] = Query(None),
+    category:   Optional[str] = Query(None),
+):
+    """
+    Run ML forecast on all assets.
+    Uses Linear Regression + Seasonality + Procurement frequency boost.
+    """
+    db = get_db()
+
+    # Fetch assets
+    asset_docs = db.collection("assets").stream()
+    assets = [doc.to_dict() for doc in asset_docs]
+
+    # Fetch procurement for frequency boost
+    proc_docs    = db.collection("procurement").stream()
+    procurement  = [doc.to_dict() for doc in proc_docs]
+
+    # Run forecast
+    results = run_ml_forecast(assets, procurement)
+
+    # Apply filters
+    if risk:       results = [r for r in results if r["risk"]       == risk]
+    if department: results = [r for r in results if r["department"] == department]
+    if category:   results = [r for r in results if r["category"]   == category]
+
+    return {
+        "generatedAt": datetime.utcnow().isoformat(),
+        "totalAssets": len(assets),
+        "filtered":    len(results),
+        "model":       "OLS Linear Regression + CIT Seasonality + Procurement Boost",
+        "results":     results,
+    }
+
+
+@router.get("/summary")
+def get_forecast_summary():
+    """Returns just the risk counts and budget estimate — for dashboard KPIs."""
+    db          = get_db()
+    asset_docs  = db.collection("assets").stream()
+    assets      = [doc.to_dict() for doc in asset_docs]
+    proc_docs   = db.collection("procurement").stream()
+    procurement = [doc.to_dict() for doc in proc_docs]
+
+    results = run_ml_forecast(assets, procurement)
+
+    summary = {
+        "critical":     sum(1 for r in results if r["risk"] == "critical"),
+        "high":         sum(1 for r in results if r["risk"] == "high"),
+        "medium":       sum(1 for r in results if r["risk"] == "medium"),
+        "low":          sum(1 for r in results if r["risk"] == "low"),
+        "totalBudget":  sum(r["estimatedCost"] for r in results if r["risk"] != "low"),
+        "avgConfidence": round(sum(r["confidence"] for r in results) / len(results), 1) if results else 0,
+        "avgR2":        round(sum(r["r2Score"] for r in results) / len(results), 3) if results else 0,
+        "currentSeason": results[0]["seasonLabel"] if results else "Unknown",
+    }
+    return summary
+
+
+@router.get("/seasonal-calendar")
+def get_seasonal_calendar():
+    """Returns the full CIT academic calendar seasonal multipliers."""
+    months = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ]
+    return {
+        "calendar": [
+            {
+                "month":      months[i],
+                "multiplier": SEASONAL_MULTIPLIERS[i + 1],
+                "level":      (
+                    "peak"   if SEASONAL_MULTIPLIERS[i + 1] >= 1.4 else
+                    "high"   if SEASONAL_MULTIPLIERS[i + 1] >= 1.2 else
+                    "normal" if SEASONAL_MULTIPLIERS[i + 1] >= 0.9 else
+                    "low"
+                ),
+            }
+            for i in range(12)
+        ]
+    }
+
+
+@router.get("/critical")
+def get_critical_items():
+    """Returns only critical and high risk items — for dashboard alerts."""
+    db          = get_db()
+    assets      = [doc.to_dict() for doc in db.collection("assets").stream()]
+    procurement = [doc.to_dict() for doc in db.collection("procurement").stream()]
+    results     = run_ml_forecast(assets, procurement)
+    urgent      = [r for r in results if r["risk"] in ("critical", "high")]
+    return {"count": len(urgent), "items": urgent}
