@@ -411,7 +411,7 @@ class InventoryForecastModel:
         if verbose:
             print(f"[ML] Generating training data from {len(assets)} assets...")
 
-        X, y = self.data_generator.generate(assets, procurement_data, n_months=12)
+        X, y = self.data_generator.generate(assets, procurement_data, n_months=6)
 
         if len(X) < 10:
             raise ValueError("Not enough assets to train. Need at least 10 assets.")
