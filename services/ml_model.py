@@ -41,7 +41,8 @@ USAGE:
   # Load saved model:
   model.load("models/")
 """
-
+import warnings
+warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 import joblib
