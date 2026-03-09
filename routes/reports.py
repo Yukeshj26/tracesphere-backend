@@ -5,7 +5,7 @@ import io
 import csv
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from datetime import datetime
+from datetime import datetime, timezone
 from services.firebase import get_db
 from services.ml_model import get_model
 
@@ -86,20 +86,33 @@ def forecast_csv():
     results     = get_model().predict(assets, procurement)
     headers = [
         "Asset ID","Name","Category","Department","Current Qty","Min Qty",
-        "Pred Qty 30d","Pred Qty 60d","Monthly Consumption","Days Until Low",
-        "Reorder Qty","Est Cost","Risk","Confidence","R2 Score","Season","Proc Boosted"
+        "Pred Qty 30d","Pred Qty 60d","Pred Qty 90d","Monthly Consumption",
+        "Days Until Low","Reorder Qty","Est Budget (Rs)",
+        "Risk","Confidence %","Anomaly","Season"
     ]
     rows = [[
-        r["assetId"], r["name"], r["category"], r["department"],
-        r["currentQty"], r["minQty"], r["predictedQty30"], r["predictedQty60"],
-        r["monthlyConsumption"], r["daysUntilLow"] if r["daysUntilLow"] != 999 else "Safe",
-        r["reorderQty"], r["estimatedCost"], r["risk"], r["confidence"],
-        r["r2Score"], r["seasonLabel"], "Yes" if r["procBoosted"] else "No"
+        r.get("assetId",""),
+        r.get("name",""),
+        r.get("category",""),
+        r.get("department",""),
+        r.get("currentQty",""),
+        r.get("minQty",""),
+        r.get("predictedQty30",""),
+        r.get("predictedQty60",""),
+        r.get("predictedQty90",""),
+        r.get("monthlyConsumption",""),
+        r.get("daysUntilLow","") if r.get("daysUntilLow") != 999 else "Safe",
+        r.get("reorderQty",""),
+        r.get("estimatedBudget",""),   # ← fixed: was estimatedCost
+        r.get("risk",""),
+        r.get("confidence",""),
+        "Yes" if r.get("isAnomaly") else "No",   # ← fixed: was procBoosted
+        r.get("seasonLabel",""),
     ] for r in results]
     return make_csv_response("tracesphere-ml-forecast.csv", headers, rows)
 
 
-# ── Reorder Report (same as dashboard button) ─────────────────────────────────
+# ── Reorder Report ────────────────────────────────────────────────────────────
 @router.get("/reorder/csv")
 def reorder_csv():
     assets  = _get_assets()
@@ -107,10 +120,10 @@ def reorder_csv():
     headers = ["Asset ID","Item Name","Category","Department","Location","Current Qty","Min Qty","Reorder Qty","Unit Cost (Rs)","Total Est. (Rs)","Status"]
     rows = []
     for a in low:
-        curr       = int(a.get("quantity",0) or 0)
-        mn         = int(a.get("minQuantity",1) or 1)
-        cost       = float(a.get("cost",0) or 0)
-        reorder    = max(mn, mn * 2 - curr)
+        curr    = int(a.get("quantity",0) or 0)
+        mn      = int(a.get("minQuantity",1) or 1)
+        cost    = float(a.get("cost",0) or 0)
+        reorder = max(mn, mn * 2 - curr)
         rows.append([
             a.get("assetId",""), a.get("name",""), a.get("category",""),
             a.get("department",""), a.get("location",""),
@@ -133,15 +146,15 @@ def reports_summary():
     total_value = sum((float(a.get("cost",0) or 0)) * int(a.get("quantity",0) or 0) for a in assets)
     forecast    = get_model().predict(assets, procurement)
     return {
-        "generatedAt":        datetime.utcnow().isoformat(),
-        "totalAssets":        len(assets),
-        "lowStockCount":      len(low),
+        "generatedAt":         datetime.now(timezone.utc).isoformat(),
+        "totalAssets":         len(assets),
+        "lowStockCount":       len(low),
         "totalInventoryValue": round(total_value, 2),
-        "procurementOrders":  len(procurement),
+        "procurementOrders":   len(procurement),
         "mlForecast": {
-            "critical": sum(1 for r in forecast if r["risk"] == "critical"),
-            "high":     sum(1 for r in forecast if r["risk"] == "high"),
-            "medium":   sum(1 for r in forecast if r["risk"] == "medium"),
-            "low":      sum(1 for r in forecast if r["risk"] == "low"),
+            "critical": sum(1 for r in forecast if r.get("risk") == "critical"),
+            "high":     sum(1 for r in forecast if r.get("risk") == "high"),
+            "medium":   sum(1 for r in forecast if r.get("risk") == "medium"),
+            "low":      sum(1 for r in forecast if r.get("risk") == "low"),
         }
     }
