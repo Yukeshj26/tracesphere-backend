@@ -41,8 +41,7 @@ USAGE:
   # Load saved model:
   model.load("models/")
 """
-import warnings
-warnings.filterwarnings("ignore")
+
 import numpy as np
 import pandas as pd
 import joblib
@@ -54,7 +53,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, IsolationForest
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import cross_val_score
+
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 
@@ -372,17 +371,17 @@ class InventoryForecastModel:
 
         # Primary models
         self.rf_model = RandomForestRegressor(
-            n_estimators=200,
-            max_depth=10,
+            n_estimators=50,
+            max_depth=6,
             min_samples_split=4,
             min_samples_leaf=2,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=1,
         )
         self.gb_model = GradientBoostingRegressor(
-            n_estimators=150,
-            learning_rate=0.08,
-            max_depth=5,
+            n_estimators=50,
+            learning_rate=0.1,
+            max_depth=4,
             subsample=0.8,
             random_state=42,
         )
@@ -428,9 +427,9 @@ class InventoryForecastModel:
         self.lr_model.fit(X_scaled, y)
         self.anomaly_detector.fit(X_scaled)
 
-        # Cross-validation scores
-        rf_cv = cross_val_score(self.rf_model, X_scaled, y, cv=5, scoring="r2")
-        gb_cv = cross_val_score(self.gb_model, X_scaled, y, cv=5, scoring="r2")
+        # In-sample R² scores (no cross-val to save RAM on Render free tier)
+        rf_cv_mean = r2_score(y, self.rf_model.predict(X_scaled))
+        gb_cv_mean = r2_score(y, self.gb_model.predict(X_scaled))
 
         # In-sample metrics
         y_pred_ensemble = self._ensemble_predict(X_scaled)
@@ -449,9 +448,9 @@ class InventoryForecastModel:
             "n_assets":          len(assets),
             "n_samples":         len(X),
             "n_features":        X.shape[1],
-            "rf_cv_r2_mean":     round(float(rf_cv.mean()), 3),
-            "rf_cv_r2_std":      round(float(rf_cv.std()), 3),
-            "gb_cv_r2_mean":     round(float(gb_cv.mean()), 3),
+            "rf_cv_r2_mean":     round(float(rf_cv_mean), 3),
+            "rf_cv_r2_std":      0,
+            "gb_cv_r2_mean":     round(float(gb_cv_mean), 3),
             "ensemble_mae":      round(float(mae), 3),
             "ensemble_r2":       round(float(r2), 3),
             "top_features":      top_features,
@@ -461,8 +460,8 @@ class InventoryForecastModel:
 
         if verbose:
             print(f"[ML] Training complete!")
-            print(f"     RandomForest  CV R² = {rf_cv.mean():.3f} ± {rf_cv.std():.3f}")
-            print(f"     GradientBoost CV R² = {gb_cv.mean():.3f}")
+            print(f"     RandomForest  R² = {rf_cv_mean:.3f}")
+            print(f"     GradientBoost R² = {gb_cv_mean:.3f}")
             print(f"     Ensemble  MAE = {mae:.3f}   R² = {r2:.3f}")
             print(f"     Top feature: {top_features[0][0]} ({top_features[0][1]:.3f})")
 
